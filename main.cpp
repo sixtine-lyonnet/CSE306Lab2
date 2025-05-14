@@ -3,6 +3,7 @@
 #include <chrono>
 using namespace std::chrono;
 #include <iostream>
+// #include <flann/flann.hpp>
 
 #include <random>
 static std::default_random_engine engine(10); // random seed = 10
@@ -126,30 +127,35 @@ Polygon clipPolygon(Polygon subjectPolygon, Polygon clipPolygon) {
     return outPolygon;
 }
 */
+// TD2
+// Semi discret optimal transprt (formula 1 and 2) + area of polygon + other
 
 class VornoiDiagram {
 public:
     VornoiDiagram() {};
 
-    Polygon clip_by_bisector(const Polygon& V, const Vector &P0, const Vector& Pi) {
+    Polygon clip_by_bisector(const Polygon& V, const Vector &P0, const Vector& Pi, double w0, double wi) {
+        double two_squardist = 2 * (P0 - Pi).norm2();
+        Vector M = (P0 + Pi) * 0.5;
+        Vector Mprime = M + ((w0 - wi) / (2*(P0-Pi).norm2()) * (Pi - P0)); // formula
+
         Polygon result;
         for (int i=0; i<V.vertices.size(); i++) {
             const Vector &A = V.vertices[(i == 0)? V.vertices.size()-1:i-1];
             const Vector &B = V.vertices[i];
 
-            if ((B - P0).norm2() <= (B - Pi).norm2()) { // B inside = B closer to P0 than Pi
-                if ((A - P0).norm2() > (A - Pi).norm2()) { // A outside
-                    Vector M = (P0 + Pi) * 0.5;
-                    double t = dot(M-A,Pi-P0) / dot(B-A, Pi - P0);
+            if ((B - P0).norm2() - w0 <= (B - Pi).norm2() - wi) { // B inside = B closer to P0 than Pi
+                if ((A - P0).norm2() - w0 > (A - Pi).norm2() - wi) { // A outside
+                    double t = dot(Mprime-A,Pi-P0) / dot(B-A, Pi - P0);
                     Vector P = A + t*(B-A);
                     result.vertices.push_back(P);
                 }
                 result.vertices.push_back(B);
             }
             else {
-                if ((A - P0).norm2() <= (A - Pi).norm2()) { // A inside
-                    Vector M = (P0 + Pi) * 0.5;
-                    double t = dot(M-A,Pi-P0) / dot(B-A, Pi - P0);
+                if ((A - P0).norm2() - w0 <= (A - Pi).norm2() - wi) { // A inside
+                    // Vector M = (P0 + Pi) * 0.5;
+                    double t = dot(Mprime-A,Pi-P0) / dot(B-A, Pi - P0);
                     Vector P = A + t*(B-A);
                     result.vertices.push_back(P);
                 }
@@ -167,12 +173,17 @@ public:
 
         cells.resize(points.size());
 
+        std::vector<double> weights(100);
+        for (auto& w : weights) {
+            w = uniform(engine)* 0.1;
+        }
+
         for (int i = 0; i < points.size(); i++) {
             Polygon V = square;
             for (int j=0; j< points.size(); j++) {
                 if (i == j) continue;
 
-                V = clip_by_bisector(V, points[i], points[j]);
+                V = clip_by_bisector(V, points[i], points[j], weights[i], weights[j]);
             }
             cells[i] = V;
         }
@@ -180,12 +191,13 @@ public:
 
     std::vector<Vector> points; // list of points
     std::vector<Polygon> cells;// list of polygons
+    // std::vector<double> weights = {0.0};
 };
 
 int main() {
     auto a = high_resolution_clock::now();
 
-    int N = 1000;
+    int N = 100;
     VornoiDiagram Vor;
 
     for (int i = 0; i < N; i++) {
@@ -200,3 +212,6 @@ int main() {
     std::cout << "Took " << duration_cast<milliseconds>(b - a).count() << " milliseconds" <<  std::endl;
     return 0;
 }
+
+// g++ -std=c++17 -I/opt/homebrew/opt/flann/include -I/opt/homebrew/opt/lz4/include main.cpp -o main
+// ./main
