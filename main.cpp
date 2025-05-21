@@ -4,6 +4,8 @@
 using namespace std::chrono;
 #include <iostream>
 // #include <flann/flann.hpp>
+#include <stdio.h>
+#include "lbfgs.h"
 
 #include <random>
 static std::default_random_engine engine(10); // random seed = 10
@@ -64,6 +66,39 @@ Vector cross(const Vector& a, const Vector& b) {
 class Polygon {  
 public:
     std::vector<Vector> vertices;
+
+    double area() {
+        if (vertices.size() < 3) {return 0;}
+        // return forumla from slides
+        double s = 0;
+        for (int i=0; i<vertices.size(); i++) {
+            int ip = (i==vertices.size()-1) ? 0 : i + 1;
+            s += vertices[i][0] * vertices[ip][1] - vertices[ip][0] * vertices[i][1];
+        }
+        return std::abs(s/2.);
+    }
+
+    double integral_square_distance(const Vector& Pi) {
+        if (vertices.size() < 3) {return 0;}
+        double s = 0;
+        // decompose polygon in n-2 triangles (n being the number of vertices)
+        for (int t=1; t<vertices.size()-1; t++) {
+            Vector c[3] = {vertices[0], vertices[t], vertices[t+1]}; //triangle
+
+            double integralT = 0;
+            for (int k=0; k<3; k++) {
+                for (int l=k; l<3; l++) {
+                    integralT += dot(c[k] - Pi, c[l] - Pi);
+                }
+            }
+            Vector edge1 = c[1] - c[0];
+            Vector edge2 = c[2] - c[0];
+            // double areaT = 0.5 * std::abs((c[1][1]-c[0][1])*(c[2][0]-c[0][0]) - (c[1][0]-c[0][0])*(c[2][0]-c[0][0])); //formula cross product
+            double areaT = 0.5 * std::abs((edge1[0]*edge2[1]) - (edge1[1]*edge2[0]));
+            s += integralT * areaT / 6.;
+        }
+        return s;
+    }
 };  
      
 // saves a static svg file. The polygon vertices are supposed to be in the range [0..1], and a canvas of size 1000x1000 is created
@@ -135,7 +170,6 @@ public:
     VornoiDiagram() {};
 
     Polygon clip_by_bisector(const Polygon& V, const Vector &P0, const Vector& Pi, double w0, double wi) {
-        double two_squardist = 2 * (P0 - Pi).norm2();
         Vector M = (P0 + Pi) * 0.5;
         Vector Mprime = M + ((w0 - wi) / (2*(P0-Pi).norm2()) * (Pi - P0)); // formula
 
@@ -173,7 +207,6 @@ public:
 
         cells.resize(points.size());
 
-        std::vector<double> weights(100);
         for (auto& w : weights) {
             w = uniform(engine)* 0.1;
         }
@@ -191,8 +224,98 @@ public:
 
     std::vector<Vector> points; // list of points
     std::vector<Polygon> cells;// list of polygons
-    // std::vector<double> weights = {0.0};
+    std::vector<double> weights = std::vector<double>(100);
 };
+
+class OptimalTransport {
+public: 
+    OptimalTransport() {};
+
+    int ret ;
+
+    void optimise();
+    /*
+    void optimise() {
+        int N = vor.weights.size();
+        lbfgsfloatval_t fx;
+        std::vector<double> weights(N, 0);
+
+        lbfgs_parameter_t param;
+        // Initialise the parameters for the L-BFGS optimisation.
+        lbfgs_parameter_init(&param);
+        // param.lineserach = LBFGS_LINESEARCH_BACKTRACKING;
+
+        int ret = lbfgs(N, &weights[0], &fx, evaluate, progress, (void*)this, &param);
+
+        memcpy(&vor.weights[0], &weights[0], N * sizeof(weights[0]));
+        vor.compute();
+    }
+    */
+
+    VornoiDiagram vor;
+};
+
+static lbfgsfloatval_t evaluate(
+    void *instance,
+    const lbfgsfloatval_t* x,
+    lbfgsfloatval_t* g,
+    const int n,
+    const lbfgsfloatval_t step
+    )
+{
+    OptimalTransport* ot = (OptimalTransport*)(instance);
+
+    memcpy(&ot->vor.weights[0], x, n * sizeof(x[0]));
+    ot->vor.compute();
+
+    int i;
+    lbfgsfloatval_t fx = 0.0;
+
+    for (i = 0;i < n;i += 2) {
+        double current_area = ot->vor.cells[i].area();
+        g[i] = -(1./n - current_area);//- (formula from slides);
+
+        fx += ot->vor.cells[i].integral_square_distance(ot->vor.points[i]) - x[i]*(current_area - 1./n);
+    }
+    return -fx;
+}
+
+static int progress(
+    void *instance,
+    const lbfgsfloatval_t *x,
+    const lbfgsfloatval_t *g,
+    const lbfgsfloatval_t fx,
+    const lbfgsfloatval_t xnorm,
+    const lbfgsfloatval_t gnorm,
+    const lbfgsfloatval_t step,
+    int n,
+    int k,
+    int ls
+    )
+{
+    printf("Iteration %d:\n", k);
+    // printf("  fx = %f, x[0] = %f, x[1] = %f\n", fx, x[0], x[1]);
+    printf("  fx = %f\n", fx);
+    printf("  xnorm = %f, gnorm = %f, step = %f\n", xnorm, gnorm, step);
+    printf("\n");
+    return 0;
+}
+
+void OptimalTransport::optimise() {
+    int N = vor.weights.size();
+    lbfgsfloatval_t fx;
+    std::vector<double> weights(N, 0);
+
+    lbfgs_parameter_t param;
+    /* Initialise the parameters for the L-BFGS optimisation. */
+    lbfgs_parameter_init(&param);
+    /*param.lineserach = LBFGS_LINESEARCH_BACKTRACKING; */
+
+    int ret = lbfgs(N, &weights[0], &fx, evaluate, progress, (void*)this, &param);
+
+    memcpy(&vor.weights[0], &weights[0], N * sizeof(weights[0]));
+    vor.compute();
+}
 
 int main() {
     auto a = high_resolution_clock::now();
@@ -203,9 +326,13 @@ int main() {
     for (int i = 0; i < N; i++) {
         Vor.points.push_back(Vector(uniform(engine), uniform(engine), 0.0));
     }
-    Vor.compute();
+    // Vor.compute();
 
-    save_svg(Vor.cells, "result.svg", &Vor.points); // , &Vor.points
+    OptimalTransport ot;
+    ot.vor = Vor;
+    ot.optimise();
+
+    save_svg(ot.vor.cells, "result.svg", &Vor.points); // , &Vor.points
 
     // End the timer
     auto b = high_resolution_clock::now();
