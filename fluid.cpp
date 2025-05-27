@@ -6,6 +6,12 @@ using namespace std::chrono;
 // #include <flann/flann.hpp>
 #include <stdio.h>
 #include "lbfgs.h"
+#include <sstream>
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "std_image_write.h"
+
+#define VOL_FLUID 0.6
 
 #include <random>
 static std::default_random_engine engine(10); // random seed = 10
@@ -62,6 +68,18 @@ double dot(const Vector& a, const Vector& b) {
 Vector cross(const Vector& a, const Vector& b) {
     return Vector(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]);
 }
+Vector operator-=(Vector a, const Vector& b) {
+    a[0] -= b[0];
+    a[1] -= b[1];
+    a[2] -= b[2];
+    return a;
+}
+Vector operator+=(Vector a, const Vector& b) {
+    a[0] += b[0];
+    a[1] += b[1];
+    a[2] += b[2];
+    return a;
+}
 
 class Polygon {  
 public:
@@ -70,12 +88,26 @@ public:
     double area() {
         if (vertices.size() < 3) {return 0;}
         // return forumla from slides
-        double s = 0;
+        double s = 0.;
         for (int i=0; i<vertices.size(); i++) {
-            int ip = (i==vertices.size()-1) ? 0 : i + 1;
+            int ip = (i==vertices.size()-1) ? 0 : (i + 1);
             s += vertices[i][0] * vertices[ip][1] - vertices[ip][0] * vertices[i][1];
         }
         return std::abs(s/2.);
+    }
+
+    Vector centroid() {
+        if (vertices.size() < 3) {return Vector(0, 0, 0);}
+        // return forumla from slides
+        Vector c = Vector(0, 0, 0);
+        for (int i=0; i<vertices.size(); i++) {
+            int ip = (i==vertices.size()-1) ? 0 : (i + 1);
+            double crossP = (vertices[i][0] * vertices[ip][1] - vertices[ip][0] * vertices[i][1]);
+            c -= (vertices[i] + vertices[ip])*crossP; // because of minus sign, the orientation of the circles is wrong
+        }
+        double a = area();
+        c = c/(6. * a);
+        return c;
     }
 
     double integral_square_distance(const Vector& Pi) {
@@ -128,6 +160,77 @@ void save_svg(const std::vector<Polygon>& polygons, std::string filename, const 
 	fclose(f);
 }
 
+int sgn(double x) {
+    if (x > 0) return 0;
+    if (x < 0) return 1;
+    return 0;
+}
+
+void save_frame(const std::vector<Polygon> &cells, std::string filename, int frameid = 0) {
+    int W = 1000, H = 1000;
+    std::vector<unsigned char> image(W*H * 3, 255);
+#pragma omp parallel for schedule(dynamic)
+    for (int i = 0; i < cells.size(); i++) {
+
+        double bminx = 1E9, bminy = 1E9, bmaxx = -1E9, bmaxy = -1E9;
+        for (int j = 0; j < cells[i].vertices.size(); j++) {
+            bminx = std::min(bminx, cells[i].vertices[j][0]);
+            bminy = std::min(bminy, cells[i].vertices[j][1]);
+            bmaxx = std::max(bmaxx, cells[i].vertices[j][0]);
+            bmaxy = std::max(bmaxy, cells[i].vertices[j][1]);
+        }
+        bminx = std::min(W-1., std::max(0., W * bminx));
+        bminy = std::min(H-1., std::max(0., H * bminy));
+        bmaxx = std::max(W-1., std::max(0., W * bmaxx));
+        bmaxy = std::max(H-1., std::max(0., H * bmaxy));
+
+        for (int y = bminy; y < bmaxy; y++) {
+            for (int x = bminx; x < bmaxx; x++) {
+                int prevSign = 0;
+                bool isInside = true;
+                double mindistEdge = 1E9;
+                for (int j = 0; j < cells[i].vertices.size(); j++) {
+                    double x0 = cells[i].vertices[j][0] * W;
+                    double y0 = cells[i].vertices[j][1] * H;
+                    double x1 = cells[i].vertices[(j + 1) % cells[i].vertices.size()][0] * W;
+                    double y1 = cells[i].vertices[(j + 1) % cells[i].vertices.size()][1] * H;
+                    double det = (x - x0)*(y1-y0) - (y - y0)*(x1-x0);
+                    int sign = sgn(det);
+                    if (prevSign == 0) prevSign = sign; else
+                        if (sign == 0) sign = prevSign; else
+                        if (sign != prevSign) {
+                            isInside = false;
+                            break;
+                        }
+                    prevSign = sign;
+                    double edgeLen = sqrt((x1 - x0)*(x1 - x0) + (y1 - y0)*(y1 - y0));
+                    double distEdge = std::abs(det)/ edgeLen;
+                    double dotp = (x - x0)*(x1 - x0) + (y - y0)*(y1 - y0);
+                    if (dotp<0 || dotp>edgeLen*edgeLen) distEdge = 1E9;
+                    mindistEdge = std::min(mindistEdge, distEdge);
+                }
+                if (isInside) {
+                    //if (i < N) {   // the N first particles may represent fluid, displayed in blue
+                    //  image[((H - y - 1)*W + x) * 3] = 0;
+                    //  image[((H - y - 1)*W + x) * 3 + 1] = 0;
+                    //  image[((H - y - 1)*W + x) * 3 + 2] = 255;
+                    //}
+                    if (mindistEdge <= 2) {
+                        image[((H - y - 1)*W + x) * 3] = 0;
+                        image[((H - y - 1)*W + x) * 3 + 1] = 0;
+                        image[((H - y - 1)*W + x) * 3 + 2] = 0;
+                    }
+
+                }
+                
+            }
+        }
+    }
+    std::ostringstream os;
+    os << filename << frameid << ".png";
+    stbi_write_png(os.str().c_str(), W, H, 3, &image[0], 0);
+}
+
 // For each point P_i
 // construct Vor(P_i) # vornoi cell of the point P_I
 // V = Square # a big square (initial cell)
@@ -167,7 +270,47 @@ Polygon clipPolygon(Polygon subjectPolygon, Polygon clipPolygon) {
 
 class VornoiDiagram {
 public:
-    VornoiDiagram() {};
+    // VornoiDiagram() {};
+
+    VornoiDiagram() {
+        N_disk = 100;
+        unit_disk.resize(N_disk);
+        for (int i = 0; i<N_disk; i++) {
+            double theta = i*2. * M_PI / (double)N_disk;
+            unit_disk[i] = Vector(cos(-theta), sin(-theta), 0);
+        }
+    };
+
+    std::vector<Vector> unit_disk;
+    int N_disk;
+
+    Polygon clip_by_edge(const Polygon& V, const Vector &u, const Vector& v) {
+        // Sutherman-Hodgman algo
+        Vector N(v[1] - u[1], u[0] - v[0], 0); // check orientation otherwise, will keep all outside of polygon
+        Polygon result;
+        for (int i=0; i<V.vertices.size(); i++) {
+            const Vector &A = V.vertices[(i == 0)? V.vertices.size()-1:i-1];
+            const Vector &B = V.vertices[i];
+
+            if (dot(u-B, N) >= 0) { // B inside = B closer to P0 than Pi
+                if (dot(u-A, N) < 0) { // A outside
+                    double t = dot(u-A, N) / dot(B-A, N);
+                    Vector P = A + t*(B-A);
+                    result.vertices.push_back(P);
+                }
+                result.vertices.push_back(B);
+            }
+            else {
+                if (dot(u-A, N) >= 0) { // A inside
+                    // Vector M = (P0 + Pi) * 0.5;
+                    double t = dot(u-A, N) / dot(B-A, N);
+                    Vector P = A + t*(B-A);
+                    result.vertices.push_back(P);
+                }
+            }
+        }
+        return result; // the clipped polygon
+    }
 
     Polygon clip_by_bisector(const Polygon& V, const Vector &P0, const Vector& Pi, double w0, double wi) {
         Vector M = (P0 + Pi) * 0.5;
@@ -179,7 +322,7 @@ public:
             const Vector &B = V.vertices[i];
 
             if ((B - P0).norm2() - w0 <= (B - Pi).norm2() - wi) { // B inside = B closer to P0 than Pi
-                if ((A - P0).norm2() - w0 > (A - Pi).norm2() - wi) { // A outside
+                if ((A - P0).norm2() - w0 >= (A - Pi).norm2() - wi) { // A outside
                     double t = dot(Mprime-A,Pi-P0) / dot(B-A, Pi - P0);
                     Vector P = A + t*(B-A);
                     result.vertices.push_back(P);
@@ -220,6 +363,15 @@ public:
 
                 V = clip_by_bisector(V, points[i], points[j], weights[i], weights[j]);
             }
+            // FLUID
+            // clip V by disk
+            for (int j=0; j<N_disk; j++) {
+                double radius = sqrt(weights[i] - weights[weights.size()-1]);
+                Vector u = unit_disk[j] * radius + points[i];
+                Vector v = unit_disk[(j+1)%N_disk] * radius + points[i];
+                V = clip_by_edge(V, u, v);
+            }
+
             cells[i] = V;
         }
     }
@@ -257,6 +409,7 @@ public:
     VornoiDiagram vor;
 };
 
+/*
 static lbfgsfloatval_t evaluate(
     void *instance,
     const lbfgsfloatval_t* x,
@@ -270,17 +423,60 @@ static lbfgsfloatval_t evaluate(
     memcpy(&ot->vor.weights[0], x, n * sizeof(x[0]));
     ot->vor.compute();
 
-    // int i;
+    int i;
     lbfgsfloatval_t fx = 0.0;
 
-    for (int i = 0;i < n;i++) {
+    for (i = 0;i < n;i += 1) {
         double current_area = ot->vor.cells[i].area();
-        g[i] = -(1./n - current_area);//- (formula from slides);
+        g[i] = current_area - 1./n;//- (formula from slides);
 
         fx += ot->vor.cells[i].integral_square_distance(ot->vor.points[i]) - x[i]*(current_area - 1./n);
     }
     return -fx;
 }
+*/
+
+static lbfgsfloatval_t evaluate(
+    void *instance,
+    const lbfgsfloatval_t* x,
+    lbfgsfloatval_t* g,
+    const int n,
+    const lbfgsfloatval_t step
+)
+{
+    OptimalTransport* ot = (OptimalTransport*)(instance);
+
+    memcpy(&ot->vor.weights[0], x, n * sizeof(x[0]));
+    ot->vor.compute();
+
+    lbfgsfloatval_t fx = 0.0;
+    double sum_fluid_areas = 0.0;
+    for (int i = 0; i < n; i++) {
+        Polygon& cell = ot->vor.cells[i];
+        if (cell.vertices.size() < 3) {
+            g[i] = 0.0; // skip bad cells
+            continue;
+        }
+
+        double area = cell.area();
+        sum_fluid_areas += area;
+        double integral = cell.integral_square_distance(ot->vor.points[i]);
+
+        // g[i] = -(1.0 / n - area);  // == -∂g/∂w_i
+        // Fluid
+        g[i] = -(VOL_FLUID/n - area);
+        fx += integral - x[i] * (area - 1.0 / n); // g(w)
+        // FLUID
+        fx += integral - x[i] * (area - VOL_FLUID / n); // g(w)
+    }
+    double estimated_air_volume = 1.0 - sum_fluid_areas;
+    double desired_air_volume = 1.0 - VOL_FLUID;
+    g[n-1] = -((1.0 - VOL_FLUID) - estimated_air_volume);
+    fx += x[n-1] * (desired_air_volume - estimated_air_volume);
+
+    return -fx; // because L-BFGS minimizes, but we maximize g
+}
+
 
 static int progress(
     void *instance,
@@ -295,48 +491,114 @@ static int progress(
     int ls
     )
 {
-    // printf("Iteration %d:\n", k);
-    // printf("  fx = %f\n", fx);
-    // printf("  xnorm = %f, gnorm = %f, step = %f\n", xnorm, gnorm, step);
-    // printf("\n");
+    printf("Iteration %d:\n", k);
+    // printf("  fx = %f, x[0] = %f, x[1] = %f\n", fx, x[0], x[1]);
+    printf("  fx = %f\n", fx);
+    printf("  xnorm = %f, gnorm = %f, step = %f\n", xnorm, gnorm, step);
+    printf("\n");
     return 0;
 }
 
+/*
 void OptimalTransport::optimise() {
     int N = vor.weights.size();
     lbfgsfloatval_t fx;
     std::vector<double> weights(N, 0);
+    // std::vector<double>& weights = vor.weights;
 
     lbfgs_parameter_t param;
-    /* Initialise the parameters for the L-BFGS optimisation. */
+    // Initialise the parameters for the L-BFGS optimisation.
     lbfgs_parameter_init(&param);
-    /*param.lineserach = LBFGS_LINESEARCH_BACKTRACKING; */
+    // param.lineserach = LBFGS_LINESEARCH_BACKTRACKING;
 
     int ret = lbfgs(N, &weights[0], &fx, evaluate, progress, (void*)this, &param);
 
     memcpy(&vor.weights[0], &weights[0], N * sizeof(weights[0]));
     vor.compute();
 }
+*/
+
+void OptimalTransport::optimise() {
+    int N = vor.points.size(); 
+    // vor.weights.resize(N); // match number of points
+    std::vector<double> weights( N, 0 );
+    memcpy(&weights[0], &vor.weights[0], N * sizeof(weights[0]));
+
+    lbfgs_parameter_t param;
+    lbfgs_parameter_init(&param);
+
+    lbfgsfloatval_t fx;
+    int ret = lbfgs(N, &weights[0], &fx, evaluate, progress, (void*)this, &param);
+
+    // vor.compute(); // final diagram with optimized weights
+}
+
+class Fluid {
+public:
+    Fluid(int N = 1000):N(N) {
+        particles.resize(N);
+        velocities.resize(N, Vector(0, 0, 0));
+        for (int i=0; i<N; i++) {
+            particles[i] = Vector(uniform(engine), uniform(engine), 0);
+        }
+        // fluid_volume = 0.6;
+
+        ot.vor.points = particles;
+        ot.vor.weights.resize(N+1);
+        std::fill(ot.vor.weights.begin(), ot.vor.weights.end(), 1.);
+        ot.vor.weights[N] = 0.99;
+    } 
+
+    void time_step(double dt) {
+
+        double epsilon2 = 0.004 * 0.004;
+        Vector g(0, -9.81, 0); //gravity
+        double m_i = 100; //mass
+        ot.vor.points = particles;
+        ot.optimise();
+
+        for (int i=0; i<particles.size(); i++) {
+            Vector center_cell = ot.vor.cells[i].centroid();
+            Vector spring_force = (center_cell - particles[i])/epsilon2;
+            Vector all_forces = m_i*g + spring_force;
+            velocities[i] += dt/m_i * all_forces;
+            particles[i] += dt * velocities[i];
+
+        }
+    }
+
+    void run_simulation() {
+        double dt = 0.002;
+        for (int i = 0; i< 100; i++) {
+            time_step(dt);
+            save_frame(ot.vor.cells, "test");
+        }
+    }
+
+    OptimalTransport ot;
+    std::vector<Vector> particles;
+    std::vector<Vector> velocities;
+    int N;
+    double fluid_volume;
+};
 
 int main() {
     auto a = high_resolution_clock::now();
 
     int N = 100;
+
+    Fluid fluid = Fluid(100); // Fluid.fluid(100);
+    fluid.run_simulation();
+    exit(0);
+
     VornoiDiagram Vor;
 
     for (int i = 0; i < N; i++) {
         Vor.points.push_back(Vector(uniform(engine), uniform(engine), 0.0));
-
-        double sigma = 0.5;
-        double x = uniform(engine);
-        double y = uniform(engine);
-        double dx = x - 0.5;
-        double dy = y - 0.5;
-        double dist2 = dx*dx + dy*dy;
-        double weight = 1.0 - exp(-dist2 / (2.0 * sigma * sigma));
-        Vor.weights.push_back(weight);
+        Vor.weights.push_back( 0 );
     }
-    // Vor.weights.resize(N, 0.0);
+    Vor.weights.resize(N, 0.0);
+    // Vor.compute();
 
     OptimalTransport ot;
     ot.vor = Vor;
