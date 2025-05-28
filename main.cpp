@@ -326,17 +326,8 @@ int main() {
 
     for (int i = 0; i < N; i++) {
         Vor.points.push_back(Vector(uniform(engine), uniform(engine), 0.0));
-
-        double sigma = 0.5;
-        double x = uniform(engine);
-        double y = uniform(engine);
-        double dx = x - 0.5;
-        double dy = y - 0.5;
-        double dist2 = dx*dx + dy*dy;
-        double weight = 1.0 - exp(-dist2 / (2.0 * sigma * sigma));
-        Vor.weights.push_back(weight);
     }
-    // Vor.weights.resize(N, 0.0);
+    Vor.weights.resize(N, 0.0);
 
     OptimalTransport ot;
     ot.vor = Vor;

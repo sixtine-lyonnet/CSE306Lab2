@@ -103,7 +103,7 @@ public:
         for (int i=0; i<vertices.size(); i++) {
             int ip = (i==vertices.size()-1) ? 0 : (i + 1);
             double crossP = (vertices[i][0] * vertices[ip][1] - vertices[ip][0] * vertices[i][1]);
-            c -= (vertices[i] + vertices[ip])*crossP; // because of minus sign, the orientation of the circles is wrong
+            c += (vertices[i] + vertices[ip])*crossP; // because of minus sign, the orientation of the circles is wrong
         }
         double a = area();
         c = c/(6. * a);
@@ -167,9 +167,9 @@ int sgn(double x) {
 }
 
 void save_frame(const std::vector<Polygon> &cells, std::string filename, int frameid = 0) {
-    int W = 1000, H = 1000;
+    int W = 100, H = 100; // 1000
     std::vector<unsigned char> image(W*H * 3, 255);
-#pragma omp parallel for schedule(dynamic)
+    #pragma omp parallel for schedule(dynamic)
     for (int i = 0; i < cells.size(); i++) {
 
         double bminx = 1E9, bminy = 1E9, bmaxx = -1E9, bmaxy = -1E9;
@@ -210,6 +210,7 @@ void save_frame(const std::vector<Polygon> &cells, std::string filename, int fra
                     mindistEdge = std::min(mindistEdge, distEdge);
                 }
                 if (isInside) {
+
                     //if (i < N) {   // the N first particles may represent fluid, displayed in blue
                     //  image[((H - y - 1)*W + x) * 3] = 0;
                     //  image[((H - y - 1)*W + x) * 3 + 1] = 0;
@@ -286,7 +287,10 @@ public:
 
     Polygon clip_by_edge(const Polygon& V, const Vector &u, const Vector& v) {
         // Sutherman-Hodgman algo
-        Vector N(v[1] - u[1], u[0] - v[0], 0); // check orientation otherwise, will keep all outside of polygon
+        // MODIFY
+        // Vector N(v[1] - u[1], u[0] - v[0], 0); // check orientation otherwise, will keep all outside of polygon
+        Vector N(u[1] - v[1], v[0] - u[0], 0);
+
         Polygon result;
         for (int i=0; i<V.vertices.size(); i++) {
             const Vector &A = V.vertices[(i == 0)? V.vertices.size()-1:i-1];
@@ -310,7 +314,7 @@ public:
             }
         }
         return result; // the clipped polygon
-    }
+    }    
 
     Polygon clip_by_bisector(const Polygon& V, const Vector &P0, const Vector& Pi, double w0, double wi) {
         Vector M = (P0 + Pi) * 0.5;
@@ -366,7 +370,11 @@ public:
             // FLUID
             // clip V by disk
             for (int j=0; j<N_disk; j++) {
-                double radius = sqrt(weights[i] - weights[weights.size()-1]);
+                // MODIFY 
+                // double radius = sqrt(weights[i] - weights[weights.size()-1]);
+                double diff = weights[i] - weights[weights.size()-1];
+                double radius = (diff > 0) ? sqrt(diff) : 0.0;
+
                 Vector u = unit_disk[j] * radius + points[i];
                 Vector v = unit_disk[(j+1)%N_disk] * radius + points[i];
                 V = clip_by_edge(V, u, v);
@@ -445,13 +453,12 @@ static lbfgsfloatval_t evaluate(
 )
 {
     OptimalTransport* ot = (OptimalTransport*)(instance);
-
     memcpy(&ot->vor.weights[0], x, n * sizeof(x[0]));
     ot->vor.compute();
 
     lbfgsfloatval_t fx = 0.0;
     double sum_fluid_areas = 0.0;
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < n-1; i++) {
         Polygon& cell = ot->vor.cells[i];
         if (cell.vertices.size() < 3) {
             g[i] = 0.0; // skip bad cells
@@ -465,7 +472,8 @@ static lbfgsfloatval_t evaluate(
         // g[i] = -(1.0 / n - area);  // == -∂g/∂w_i
         // Fluid
         g[i] = -(VOL_FLUID/n - area);
-        fx += integral - x[i] * (area - 1.0 / n); // g(w)
+
+        // fx += integral - x[i] * (area - 1.0 / n); // g(w)
         // FLUID
         fx += integral - x[i] * (area - VOL_FLUID / n); // g(w)
     }
@@ -519,18 +527,20 @@ void OptimalTransport::optimise() {
 */
 
 void OptimalTransport::optimise() {
+
     int N = vor.points.size(); 
-    // vor.weights.resize(N); // match number of points
-    std::vector<double> weights( N, 0 );
-    memcpy(&weights[0], &vor.weights[0], N * sizeof(weights[0]));
+    lbfgsfloatval_t fx;
+    // std::vector<double> weights( N, 0 );
+    std::vector<double> weights = vor.weights;
+    weights.resize(N + 1);
+    // memcpy(&weights[0], &vor.weights[0], N * sizeof(weights[0]));
 
     lbfgs_parameter_t param;
     lbfgs_parameter_init(&param);
 
-    lbfgsfloatval_t fx;
     int ret = lbfgs(N, &weights[0], &fx, evaluate, progress, (void*)this, &param);
-
-    // vor.compute(); // final diagram with optimized weights
+    memcpy(&vor.weights[0], &weights[0], N * sizeof(weights[0]));
+    vor.compute(); // final diagram with optimized weights
 }
 
 class Fluid {
@@ -546,6 +556,12 @@ public:
         ot.vor.points = particles;
         ot.vor.weights.resize(N+1);
         std::fill(ot.vor.weights.begin(), ot.vor.weights.end(), 1.);
+
+        // MODIFY
+        for (int i = 0; i < N; i++) {
+            ot.vor.weights[i] = uniform(engine) * 0.1;  // small randomness
+        }
+
         ot.vor.weights[N] = 0.99;
     } 
 
@@ -553,25 +569,33 @@ public:
 
         double epsilon2 = 0.004 * 0.004;
         Vector g(0, -9.81, 0); //gravity
-        double m_i = 100; //mass
+        double m_i = 1; // 100; //mass
         ot.vor.points = particles;
         ot.optimise();
 
         for (int i=0; i<particles.size(); i++) {
-            Vector center_cell = ot.vor.cells[i].centroid();
+            // MODIFY
+            //Vector center_cell = ot.vor.cells[i].centroid();
+            Vector center_cell(0, 0, 0);
+            if (ot.vor.cells[i].vertices.size() >= 3) {
+                center_cell = ot.vor.cells[i].centroid();
+            } else {
+                continue; // skip this particle
+            }
+
             Vector spring_force = (center_cell - particles[i])/epsilon2;
             Vector all_forces = m_i*g + spring_force;
             velocities[i] += dt/m_i * all_forces;
             particles[i] += dt * velocities[i];
-
         }
+        
     }
 
     void run_simulation() {
-        double dt = 0.002;
+        double dt = 0.02; // 0.002;
         for (int i = 0; i< 100; i++) {
             time_step(dt);
-            save_frame(ot.vor.cells, "test");
+            save_frame(ot.vor.cells, "test", i);
         }
     }
 
