@@ -68,16 +68,17 @@ double dot(const Vector& a, const Vector& b) {
 Vector cross(const Vector& a, const Vector& b) {
     return Vector(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]);
 }
-Vector operator-=(Vector a, const Vector& b) {
-    a[0] -= b[0];
-    a[1] -= b[1];
-    a[2] -= b[2];
-    return a;
-}
-Vector operator+=(Vector a, const Vector& b) {
+Vector& operator+=(Vector& a, const Vector& b) {
     a[0] += b[0];
     a[1] += b[1];
     a[2] += b[2];
+    return a;
+}
+
+Vector& operator-=(Vector& a, const Vector& b) {
+    a[0] -= b[0];
+    a[1] -= b[1];
+    a[2] -= b[2];
     return a;
 }
 
@@ -587,6 +588,12 @@ public:
             Vector all_forces = m_i*g + spring_force;
             velocities[i] += dt/m_i * all_forces;
             particles[i] += dt * velocities[i];
+
+            // MODIFY
+            std::cout << "Before update: " << particles[i][0] << ", " << particles[i][1] << std::endl;
+            velocities[i] += dt * all_forces;
+            particles[i] += dt * velocities[i];
+            std::cout << "After update:  " << particles[i][0] << ", " << particles[i][1] << std::endl;
         }
         
     }
