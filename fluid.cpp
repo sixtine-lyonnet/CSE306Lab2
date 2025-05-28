@@ -97,7 +97,30 @@ public:
         return std::abs(s/2.);
     }
 
+    // MODIFY ptpt version
     Vector centroid() {
+        if (vertices.size() < 3) return Vector(0, 0, 0);
+    
+        Vector c(0, 0, 0);
+        double signedArea = 0.0;
+    
+        for (int i = 0; i < vertices.size(); i++) {
+            const Vector& v0 = vertices[i];
+            const Vector& v1 = vertices[(i + 1) % vertices.size()];
+            double crossP = v0[0] * v1[1] - v1[0] * v0[1];
+    
+            c += (v0 + v1) * crossP;
+            signedArea += crossP;
+        }
+    
+        signedArea *= 0.5;
+        c = c / (6.0 * signedArea);
+    
+        return c;
+    }
+    
+
+    Vector centroid1() {
         if (vertices.size() < 3) {return Vector(0, 0, 0);}
         // return forumla from slides
         Vector c = Vector(0, 0, 0);
@@ -371,11 +394,7 @@ public:
             // FLUID
             // clip V by disk
             for (int j=0; j<N_disk; j++) {
-                // MODIFY 
-                // double radius = sqrt(weights[i] - weights[weights.size()-1]);
-                double diff = weights[i] - weights[weights.size()-1];
-                double radius = (diff > 0) ? sqrt(diff) : 0.0;
-
+                double radius = sqrt(weights[i] - weights[weights.size()-1]);
                 Vector u = unit_disk[j] * radius + points[i];
                 Vector v = unit_disk[(j+1)%N_disk] * radius + points[i];
                 V = clip_by_edge(V, u, v);
@@ -459,7 +478,7 @@ static lbfgsfloatval_t evaluate(
 
     lbfgsfloatval_t fx = 0.0;
     double sum_fluid_areas = 0.0;
-    for (int i = 0; i < n-1; i++) {
+    for (int i = 0; i < n-1; i++) { // n PROF
         Polygon& cell = ot->vor.cells[i];
         if (cell.vertices.size() < 3) {
             g[i] = 0.0; // skip bad cells
@@ -470,19 +489,14 @@ static lbfgsfloatval_t evaluate(
         sum_fluid_areas += area;
         double integral = cell.integral_square_distance(ot->vor.points[i]);
 
-        // g[i] = -(1.0 / n - area);  // == -∂g/∂w_i
         // Fluid
-        g[i] = -(VOL_FLUID/n - area);
-
-        // fx += integral - x[i] * (area - 1.0 / n); // g(w)
-        // FLUID
-        fx += integral - x[i] * (area - VOL_FLUID / n); // g(w)
+        g[i] = -(VOL_FLUID/(n-1) - area); // -(VOL_FLUID/n - area); MODIFY
+        fx += integral - x[i] * (area - VOL_FLUID / (n-1)); // integral - x[i] * (area - VOL_FLUID / n); MODIFY
     }
     double estimated_air_volume = 1.0 - sum_fluid_areas;
     double desired_air_volume = 1.0 - VOL_FLUID;
     g[n-1] = -((1.0 - VOL_FLUID) - estimated_air_volume);
     fx += x[n-1] * (desired_air_volume - estimated_air_volume);
-
     return -fx; // because L-BFGS minimizes, but we maximize g
 }
 
@@ -533,7 +547,7 @@ void OptimalTransport::optimise() {
     lbfgsfloatval_t fx;
     // std::vector<double> weights( N, 0 );
     std::vector<double> weights = vor.weights;
-    weights.resize(N + 1);
+    weights.resize(N);
     // memcpy(&weights[0], &vor.weights[0], N * sizeof(weights[0]));
 
     lbfgs_parameter_t param;
@@ -552,17 +566,9 @@ public:
         for (int i=0; i<N; i++) {
             particles[i] = Vector(uniform(engine), uniform(engine), 0);
         }
-        // fluid_volume = 0.6;
-
         ot.vor.points = particles;
         ot.vor.weights.resize(N+1);
         std::fill(ot.vor.weights.begin(), ot.vor.weights.end(), 1.);
-
-        // MODIFY
-        for (int i = 0; i < N; i++) {
-            ot.vor.weights[i] = uniform(engine) * 0.1;  // small randomness
-        }
-
         ot.vor.weights[N] = 0.99;
     } 
 
@@ -570,36 +576,22 @@ public:
 
         double epsilon2 = 0.004 * 0.004;
         Vector g(0, -9.81, 0); //gravity
-        double m_i = 1; // 100; //mass
+        double m_i = 100; //mass
         ot.vor.points = particles;
         ot.optimise();
 
         for (int i=0; i<particles.size(); i++) {
-            // MODIFY
-            //Vector center_cell = ot.vor.cells[i].centroid();
-            Vector center_cell(0, 0, 0);
-            if (ot.vor.cells[i].vertices.size() >= 3) {
-                center_cell = ot.vor.cells[i].centroid();
-            } else {
-                continue; // skip this particle
-            }
-
+            Vector center_cell = ot.vor.cells[i].centroid();
             Vector spring_force = (center_cell - particles[i])/epsilon2;
             Vector all_forces = m_i*g + spring_force;
             velocities[i] += dt/m_i * all_forces;
             particles[i] += dt * velocities[i];
-
-            // MODIFY
-            std::cout << "Before update: " << particles[i][0] << ", " << particles[i][1] << std::endl;
-            velocities[i] += dt * all_forces;
-            particles[i] += dt * velocities[i];
-            std::cout << "After update:  " << particles[i][0] << ", " << particles[i][1] << std::endl;
         }
         
     }
 
     void run_simulation() {
-        double dt = 0.02; // 0.002;
+        double dt = 0.002;
         for (int i = 0; i< 100; i++) {
             time_step(dt);
             save_frame(ot.vor.cells, "test", i);
