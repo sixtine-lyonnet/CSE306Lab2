@@ -96,38 +96,15 @@ public:
         }
         return std::abs(s/2.);
     }
-
-    // MODIFY ptpt version
+    
     Vector centroid() {
-        if (vertices.size() < 3) return Vector(0, 0, 0);
-    
-        Vector c(0, 0, 0);
-        double signedArea = 0.0;
-    
-        for (int i = 0; i < vertices.size(); i++) {
-            const Vector& v0 = vertices[i];
-            const Vector& v1 = vertices[(i + 1) % vertices.size()];
-            double crossP = v0[0] * v1[1] - v1[0] * v0[1];
-    
-            c += (v0 + v1) * crossP;
-            signedArea += crossP;
-        }
-    
-        signedArea *= 0.5;
-        c = c / (6.0 * signedArea);
-    
-        return c;
-    }
-    
-
-    Vector centroid1() {
         if (vertices.size() < 3) {return Vector(0, 0, 0);}
         // return forumla from slides
         Vector c = Vector(0, 0, 0);
         for (int i=0; i<vertices.size(); i++) {
             int ip = (i==vertices.size()-1) ? 0 : (i + 1);
             double crossP = (vertices[i][0] * vertices[ip][1] - vertices[ip][0] * vertices[i][1]);
-            c += (vertices[i] + vertices[ip])*crossP; // because of minus sign, the orientation of the circles is wrong
+            c -= (vertices[i] + vertices[ip])*crossP; // because of minus sign, the orientation of the circles is wrong
         }
         double a = area();
         c = c/(6. * a);
@@ -185,13 +162,13 @@ void save_svg(const std::vector<Polygon>& polygons, std::string filename, const 
 }
 
 int sgn(double x) {
-    if (x > 0) return 0;
-    if (x < 0) return 1;
+    if (x > 0) return 1;
+    if (x < 0) return -1;
     return 0;
 }
 
 void save_frame(const std::vector<Polygon> &cells, std::string filename, int frameid = 0) {
-    int W = 100, H = 100; // 1000
+    int W = 500, H = 500; // 1000
     std::vector<unsigned char> image(W*H * 3, 255);
     #pragma omp parallel for schedule(dynamic)
     for (int i = 0; i < cells.size(); i++) {
@@ -234,12 +211,12 @@ void save_frame(const std::vector<Polygon> &cells, std::string filename, int fra
                     mindistEdge = std::min(mindistEdge, distEdge);
                 }
                 if (isInside) {
-
-                    //if (i < N) {   // the N first particles may represent fluid, displayed in blue
-                    //  image[((H - y - 1)*W + x) * 3] = 0;
-                    //  image[((H - y - 1)*W + x) * 3 + 1] = 0;
-                    //  image[((H - y - 1)*W + x) * 3 + 2] = 255;
-                    //}
+                    int N = 10;
+                    if (i < N) {   // the N first particles may represent fluid, displayed in blue
+                        image[((H - y - 1)*W + x) * 3] = 0;
+                        image[((H - y - 1)*W + x) * 3 + 1] = 0;
+                        image[((H - y - 1)*W + x) * 3 + 2] = 255;
+                    }
                     if (mindistEdge <= 2) {
                         image[((H - y - 1)*W + x) * 3] = 0;
                         image[((H - y - 1)*W + x) * 3 + 1] = 0;
@@ -262,47 +239,21 @@ void save_frame(const std::vector<Polygon> &cells, std::string filename, int fra
 // for each point P_j
         // V = cut(V, P_i, P_j)
 
-/*
-Polygon clipPolygon(Polygon subjectPolygon, Polygon clipPolygon) {
-    Polygon outPolygon;
-    for(const Vector& clipEdge : clipPolygon.vertices) { // For each edge of the clip polygon
-        // Clip the subjectPolygon by a half-space
-        for (int i = 0; i < subjectPolygon.vertices.size(); i++) { // For each vertex of the subject polygon
-            // Test the subject polygon edge with vertices (i-1, i)
-            Vector curVertex = subjectPolygon.vertices[i];
-            Vector prevVertex = subjectPolygon.vertices[(i>0)?(i-1):(subjectPolygon.vertices.size()-1)];
-            // Compute inter. between the infinite line supported by clipEdge and edge (i-1,i)
-            Vector intersection = intersect(prevVertex, curVertex, clipEdge);
-            if (curVertex inside clipEdge) {
-                if (prevVertex not inside clipEdge) {
-                    // The subject polygon edge crosses the clip edge, and we leave the clipping area
-                    outPolygon.vertices.add(intersection);
-                }
-                outPolygon.vertices.add(curVertex);
-            }
-            else if (prevVertex inside clipEdge) {
-                // The subject polygon edge crosses the clip edge, and we enter the clipping area
-                outPolygon.vertices.add(intersection);
-            }
-        }
-        subjectPolygon = outPolygon;
-    }
-    return outPolygon;
-}
-*/
 // TD2
-// Semi discret optimal transprt (formula 1 and 2) + area of polygon + other
+// Semi discret optimal transport (formula 1 and 2) + area of polygon + other
 
-class VornoiDiagram {
+class VoronoiDiagram {
 public:
-    // VornoiDiagram() {};
+    // VoronoiDiagram() {};
 
-    VornoiDiagram() {
+    VoronoiDiagram() {
         N_disk = 100;
         unit_disk.resize(N_disk);
         for (int i = 0; i<N_disk; i++) {
             double theta = i*2. * M_PI / (double)N_disk;
-            unit_disk[i] = Vector(cos(-theta), sin(-theta), 0);
+            // unit_disk[i] = Vector(cos(-theta), sin(-theta), 0);
+            // Andreea helped me solve this bug
+            unit_disk[i] = Vector(sin(-theta), cos(-theta), 0);
         }
     };
 
@@ -311,11 +262,10 @@ public:
 
     Polygon clip_by_edge(const Polygon& V, const Vector &u, const Vector& v) {
         // Sutherman-Hodgman algo
-        // MODIFY
-        // Vector N(v[1] - u[1], u[0] - v[0], 0); // check orientation otherwise, will keep all outside of polygon
-        Vector N(u[1] - v[1], v[0] - u[0], 0);
+        Vector N(v[1] - u[1], u[0] - v[0], 0); // check orientation otherwise, will keep all outside of polygon
 
         Polygon result;
+
         for (int i=0; i<V.vertices.size(); i++) {
             const Vector &A = V.vertices[(i == 0)? V.vertices.size()-1:i-1];
             const Vector &B = V.vertices[i];
@@ -413,14 +363,14 @@ class OptimalTransport {
 public: 
     OptimalTransport() {};
 
-    // int ret ;
-
     void optimise();
+    
     /*
     void optimise() {
         int N = vor.weights.size();
         lbfgsfloatval_t fx;
         std::vector<double> weights(N, 0);
+        memcpy( &weights[0], &vor.weights[0], N * sizeof(weights[0]));
 
         lbfgs_parameter_t param;
         // Initialise the parameters for the L-BFGS optimisation.
@@ -430,39 +380,12 @@ public:
         int ret = lbfgs(N, &weights[0], &fx, evaluate, progress, (void*)this, &param);
 
         memcpy(&vor.weights[0], &weights[0], N * sizeof(weights[0]));
-        vor.compute();
+        // vor.compute();
     }
     */
 
-    VornoiDiagram vor;
+    VoronoiDiagram vor;
 };
-
-/*
-static lbfgsfloatval_t evaluate(
-    void *instance,
-    const lbfgsfloatval_t* x,
-    lbfgsfloatval_t* g,
-    const int n,
-    const lbfgsfloatval_t step
-    )
-{
-    OptimalTransport* ot = (OptimalTransport*)(instance);
-
-    memcpy(&ot->vor.weights[0], x, n * sizeof(x[0]));
-    ot->vor.compute();
-
-    int i;
-    lbfgsfloatval_t fx = 0.0;
-
-    for (i = 0;i < n;i += 1) {
-        double current_area = ot->vor.cells[i].area();
-        g[i] = current_area - 1./n;//- (formula from slides);
-
-        fx += ot->vor.cells[i].integral_square_distance(ot->vor.points[i]) - x[i]*(current_area - 1./n);
-    }
-    return -fx;
-}
-*/
 
 static lbfgsfloatval_t evaluate(
     void *instance,
@@ -480,10 +403,6 @@ static lbfgsfloatval_t evaluate(
     double sum_fluid_areas = 0.0;
     for (int i = 0; i < n-1; i++) { // n PROF
         Polygon& cell = ot->vor.cells[i];
-        if (cell.vertices.size() < 3) {
-            g[i] = 0.0; // skip bad cells
-            continue;
-        }
 
         double area = cell.area();
         sum_fluid_areas += area;
@@ -499,7 +418,6 @@ static lbfgsfloatval_t evaluate(
     fx += x[n-1] * (desired_air_volume - estimated_air_volume);
     return -fx; // because L-BFGS minimizes, but we maximize g
 }
-
 
 static int progress(
     void *instance,
@@ -522,40 +440,22 @@ static int progress(
     return 0;
 }
 
-/*
-void OptimalTransport::optimise() {
-    int N = vor.weights.size();
-    lbfgsfloatval_t fx;
-    std::vector<double> weights(N, 0);
-    // std::vector<double>& weights = vor.weights;
-
-    lbfgs_parameter_t param;
-    // Initialise the parameters for the L-BFGS optimisation.
-    lbfgs_parameter_init(&param);
-    // param.lineserach = LBFGS_LINESEARCH_BACKTRACKING;
-
-    int ret = lbfgs(N, &weights[0], &fx, evaluate, progress, (void*)this, &param);
-
-    memcpy(&vor.weights[0], &weights[0], N * sizeof(weights[0]));
-    vor.compute();
-}
-*/
-
+// Andreea helped me debug this
 void OptimalTransport::optimise() {
 
-    int N = vor.points.size(); 
+    int N = vor.weights.size(); 
     lbfgsfloatval_t fx;
-    // std::vector<double> weights( N, 0 );
+    // std::vector<double> weights(N);
+    // memcpy(&weights[0], &vor.weights[0], N * sizeof(weights[0]));
     std::vector<double> weights = vor.weights;
     weights.resize(N);
-    // memcpy(&weights[0], &vor.weights[0], N * sizeof(weights[0]));
 
     lbfgs_parameter_t param;
     lbfgs_parameter_init(&param);
 
     int ret = lbfgs(N, &weights[0], &fx, evaluate, progress, (void*)this, &param);
     memcpy(&vor.weights[0], &weights[0], N * sizeof(weights[0]));
-    vor.compute(); // final diagram with optimized weights
+    // vor.compute(); // final diagram with optimized weights
 }
 
 class Fluid {
@@ -592,7 +492,7 @@ public:
 
     void run_simulation() {
         double dt = 0.002;
-        for (int i = 0; i< 100; i++) {
+        for (int i = 0; i< 300; i++) {
             time_step(dt);
             save_frame(ot.vor.cells, "test", i);
         }
@@ -614,13 +514,13 @@ int main() {
     fluid.run_simulation();
     exit(0);
 
-    VornoiDiagram Vor;
+    VoronoiDiagram Vor;
 
     for (int i = 0; i < N; i++) {
         Vor.points.push_back(Vector(uniform(engine), uniform(engine), 0.0));
         Vor.weights.push_back( 0 );
     }
-    Vor.weights.resize(N, 0.0);
+    // Vor.weights.resize(N, 0.0);
     // Vor.compute();
 
     OptimalTransport ot;
